@@ -3,8 +3,12 @@ import os
 
 bpy.context.preferences.view.show_splash = False
 
-CLOSE_AFTER_QUICK_SAVE = False
-CLOSE_AFTER_MANUAL_SAVE = True
+CLOSE_AFTER_QUICK_SAVE = True
+CLOSE_AFTER_MANUAL_SAVE = False
+
+LOAD_TEXTURES = False
+TEXTURE_PATH = r"" 
+TEXTURE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".tga", ".bmp"]
 
 class UnityModelExporter:
     def __init__(self, model_path):
@@ -33,12 +37,17 @@ class UnityModelExporter:
         bpy.context.tool_settings.mesh_select_mode = (False, False, True)
         bpy.ops.object.select_all(action='SELECT')
 
+        if LOAD_TEXTURES:
+            self.apply_textures()
+
         # Set shading to solid and also zoom in
         for area in bpy.context.screen.areas:
             if area.type == 'VIEW_3D':
                 for space in area.spaces:
                     if space.type == 'VIEW_3D':
                         space.shading.type = 'SOLID'
+                        if LOAD_TEXTURES:
+                            space.shading.color_type = 'TEXTURE'
                 override = {'area': area, 'region': area.regions[-1]}
                 with bpy.context.temp_override(**override):
                     bpy.ops.view3d.view_selected()
@@ -47,6 +56,55 @@ class UnityModelExporter:
         bpy.ops.ed.undo_history_clear()
 
         print(f"Loaded '{self.filename}'")
+
+    def apply_textures(self):
+        search_dir = os.path.normpath(TEXTURE_PATH)
+        
+        if not os.path.exists(search_dir):
+            print(f"Texture path not found: {search_dir}")
+            return
+
+        for obj in bpy.context.selected_objects:
+            if obj.type == 'MESH':
+                for slot in obj.material_slots:
+                    if slot.material:
+                        self.setup_material_node(slot.material, search_dir)
+
+    def setup_material_node(self, mat, search_dir):
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+
+        principled = next((n for n in nodes if n.type == 'BSDF_PRINCIPLED'), None)
+        if not principled:
+            return
+
+        # Set roughness to 1
+        if 'Roughness' in principled.inputs:
+            principled.inputs['Roughness'].default_value = 1.0
+
+        for ext in TEXTURE_EXTENSIONS:
+            image_name = f"{mat.name}{ext}"
+            full_image_path = os.path.join(search_dir, image_name)
+
+            if os.path.exists(full_image_path):
+                try:
+                    img = bpy.data.images.load(full_image_path)
+                    tex_node = next((n for n in nodes if n.type == 'TEX_IMAGE'), None)
+                    
+                    if not tex_node:
+                        tex_node = nodes.new('ShaderNodeTexImage')
+                        tex_node.location = (-300, 300)
+                    
+                    tex_node.image = img
+
+                    if 'Base Color' in principled.inputs:
+                        links.new(tex_node.outputs['Color'], principled.inputs['Base Color'])
+                    
+                    print(f"Applied texture '{image_name}'")
+                    break
+                except Exception as e:
+                    print(f"Failed to load '{image_name}': {e}")
     
     @staticmethod
     def export_to_unity(filepath, file_format):
